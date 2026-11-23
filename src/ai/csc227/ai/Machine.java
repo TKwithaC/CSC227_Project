@@ -1,246 +1,398 @@
 package csc227.ai;
 
+import java.nio.file.Path;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
-import java.util.Iterator;
 import java.util.List;
 
 /**
- * Holds the job queue, the ready queue, and the 8192 MB memory counter.
+ * Job queue, ready queue, suspend queue, and the 2048 MB counter.
  *
- * <p>The reader thread fills the job queue. The loader thread is the only
- * thread that moves a process from WAITING to READY, and it does that only
- * when {@code used + request <= 8192}. The scheduler thread (the main thread)
- * chooses who runs. One lock covers every change so the three threads do not
- * corrupt the queues.
+ * <p>Three threads share this object. {@code job-reader} parses the file and
+ * stops. {@code long-term} loads the next job when it fits. {@code medium-term}
+ * swaps when it is enabled. The main thread is the short-term scheduler: it
+ * advances a 1 ms clock and asks the selected policy which ready process runs.
+ * One lock orders those steps, so the result does not depend on which thread
+ * the JVM happens to run first.
  */
 public final class Machine {
-    public static final int MEMORY_CAPACITY_MB = 8192;
+    public static final int MEMORY_MB = 2048;
+    private static final double SWAP_OUT_ABOVE = 90.0;
+    private static final double SWAP_IN_BELOW = 70.0;
+    private static final int TIME_LIMIT = 1000000;
 
     private final Object lock = new Object();
     private final List<PCB> jobQueue = new ArrayList<PCB>();
     private final ArrayDeque<PCB> ready = new ArrayDeque<PCB>();
+    private final ArrayDeque<PCB> suspended = new ArrayDeque<PCB>();
     private final List<PCB> all = new ArrayList<PCB>();
     private final List<Slice> slices = new ArrayList<Slice>();
-    private final List<String> trace = new ArrayList<String>();
-    private final List<String> rejected = new ArrayList<String>();
+    private final List<Intervention> interventions = new ArrayList<Intervention>();
 
+    private final boolean mediumEnabled;
     private int usedMemory;
-    private int clock;
-    private boolean threaded;
+    private int time;
+    private PCB running;
     private boolean stop;
-    private boolean admissionNeeded;
-    private boolean admissionDone;
-    private Thread loader;
+    private boolean readerFinished;
+    private Phase phase = Phase.IDLE;
+    private boolean phaseDone;
+    private boolean phaseWorked;
+    private RuntimeException helperFailure;
+    private Thread longTerm;
+    private Thread mediumTerm;
 
-    public void loadJobs(List<PCB> jobs) {
-        synchronized (lock) {
-            if (!all.isEmpty()) {
-                throw new IllegalStateException("Jobs were already loaded into this machine");
-            }
-            if (jobs.size() > 30) {
-                throw new IllegalArgumentException(
-                        "The project allows at most 30 jobs, found " + jobs.size());
-            }
-            for (int i = 0; i < jobs.size(); i++) {
-                PCB copy = jobs.get(i).copy();
-                trace.add(Thread.currentThread().getName() + " created " + copy.jobName()
-                        + " (pid " + copy.pid() + ", burst " + copy.burst()
-                        + " ms, memory " + copy.memory() + " MB), state " + ProcessState.NEW);
-                copy.setState(ProcessState.WAITING);
-                trace.add(copy.jobName()
-                        + " joined the job queue, state WAITING (waiting for memory)");
-                jobQueue.add(copy);
-                all.add(copy);
-            }
-        }
+    private enum Phase {
+        IDLE, LONG, MEDIUM
     }
 
-    public void startLoader() {
-        synchronized (lock) {
-            if (loader != null) {
-                return;
-            }
-            threaded = true;
-            loader = new Thread(new Runnable() {
-                @Override
-                public void run() {
-                    loaderLoop();
-                }
-            }, "job-loader");
-            loader.start();
-        }
+    public Machine(boolean mediumEnabled) {
+        this.mediumEnabled = mediumEnabled;
     }
 
-    private void loaderLoop() {
+    public static ScheduleResult run(Path file, Policy policy, boolean mediumEnabled) {
+        Machine machine = new Machine(mediumEnabled);
+        machine.readOnThread(file);
+        machine.startHelpers();
         try {
-            synchronized (lock) {
-                while (!stop) {
-                    while (!admissionNeeded && !stop) {
-                        lock.wait();
+            machine.clock(policy);
+        } finally {
+            machine.stopHelpers();
+        }
+        return machine.result(policy);
+    }
+
+    private void readOnThread(final Path file) {
+        final RuntimeException[] failure = new RuntimeException[1];
+        Thread reader = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    List<PCB> jobs = JobFile.parse(file);
+                    synchronized (lock) {
+                        if (!all.isEmpty()) {
+                            throw new IllegalStateException("Processes were already loaded");
+                        }
+                        for (int i = 0; i < jobs.size(); i++) {
+                            PCB copy = jobs.get(i).copy();
+                            copyAsNew(copy);
+                        }
+                        readerFinished = true;
                     }
-                    if (stop) {
-                        break;
-                    }
-                    admitUnlocked();
-                    admissionNeeded = false;
-                    admissionDone = true;
-                    lock.notifyAll();
+                } catch (RuntimeException ex) {
+                    failure[0] = ex;
                 }
             }
+        }, "job-reader");
+        reader.start();
+        try {
+            reader.join();
         } catch (InterruptedException ex) {
             Thread.currentThread().interrupt();
-            throw new IllegalStateException("job-loader was interrupted", ex);
+            throw new IllegalStateException("job-reader was interrupted", ex);
         }
+        if (failure[0] != null) {
+            throw failure[0];
+        }
+        synchronized (lock) {
+            if (!readerFinished) {
+                throw new IllegalStateException("job-reader did not finish");
+            }
+        }
+    }
+
+    private void copyAsNew(PCB pcb) {
+        jobQueue.add(pcb);
+        all.add(pcb);
+    }
+
+    private void startHelpers() {
+        longTerm = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                helperLoop(Phase.LONG);
+            }
+        }, "long-term");
+        mediumTerm = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                helperLoop(Phase.MEDIUM);
+            }
+        }, "medium-term");
+        longTerm.start();
+        mediumTerm.start();
+    }
+
+    private void helperLoop(Phase mine) {
+        synchronized (lock) {
+            while (!stop) {
+                while (phase != mine && !stop) {
+                    waitOnLock();
+                }
+                if (stop) {
+                    break;
+                }
+                try {
+                    phaseWorked = mine == Phase.LONG ? longTermOnce() : mediumOnce();
+                } catch (RuntimeException ex) {
+                    helperFailure = ex;
+                    phaseWorked = false;
+                }
+                phase = Phase.IDLE;
+                phaseDone = true;
+                lock.notifyAll();
+            }
+        }
+    }
+
+    private boolean callHelper(Phase wanted) {
+        synchronized (lock) {
+            if (helperFailure != null) {
+                throw helperFailure;
+            }
+            phaseDone = false;
+            phaseWorked = false;
+            phase = wanted;
+            lock.notifyAll();
+            while (!phaseDone && helperFailure == null) {
+                waitOnLock();
+            }
+            if (helperFailure != null) {
+                throw helperFailure;
+            }
+            return phaseWorked;
+        }
+    }
+
+    private void clock(Policy policy) {
+        settle();
+        dispatchIfIdle(policy);
+        while (true) {
+            if (time > TIME_LIMIT) {
+                throw new IllegalStateException("The simulation did not finish");
+            }
+            if (running == null) {
+                if (finished()) {
+                    return;
+                }
+                throw new IllegalStateException(
+                        "No ready process, and the next job cannot enter memory. Time " + time + " ms");
+            }
+            executeOneMillisecond(policy);
+            if (policy.aging()) {
+                ageReady();
+                markStarvation();
+            }
+            settle();
+            dispatchIfIdle(policy);
+        }
+    }
+
+    private boolean finished() {
+        return running == null && ready.isEmpty() && jobQueue.isEmpty() && suspended.isEmpty();
     }
 
     /**
-     * Asks the loader to admit every waiting job that fits. When the loader
-     * thread is not running, admission happens on the caller.
+     * Let the long-term and medium-term threads act until neither one can move
+     * a process. A swap-in is refused when it would push utilization back above
+     * 90%, so the two thresholds cannot undo each other in the same millisecond.
      */
-    public void requestAdmission() {
-        synchronized (lock) {
-            if (!threaded) {
-                admitUnlocked();
-                return;
+    private void settle() {
+        int guard = 0;
+        boolean moved = true;
+        while (moved) {
+            if (++guard > 10000) {
+                throw new IllegalStateException("The memory schedulers did not settle");
             }
-            admissionDone = false;
-            admissionNeeded = true;
-            lock.notifyAll();
-            while (!admissionDone && !stop) {
-                try {
-                    lock.wait();
-                } catch (InterruptedException ex) {
-                    Thread.currentThread().interrupt();
-                    throw new IllegalStateException("scheduler was interrupted", ex);
+            boolean admitted = callHelper(Phase.LONG);
+            boolean swapped = callHelper(Phase.MEDIUM);
+            moved = admitted || swapped;
+        }
+    }
+
+    /** Load the next job only. A job that does not fit stays at the head of the job queue. */
+    private boolean longTermOnce() {
+        if (jobQueue.isEmpty()) {
+            return false;
+        }
+        PCB next = jobQueue.get(0);
+        if (next.memory() > MEMORY_MB) {
+            throw new IllegalArgumentException(
+                    "Process " + next.pid() + " needs " + next.memory()
+                            + " MB, which is more than main memory (" + MEMORY_MB + " MB)");
+        }
+        if (usedMemory + next.memory() > MEMORY_MB) {
+            return false;
+        }
+        jobQueue.remove(0);
+        usedMemory += next.memory();
+        ready.addLast(next);
+        next.enterReady(time, ready.size());
+        return true;
+    }
+
+    private boolean mediumOnce() {
+        if (!mediumEnabled) {
+            return false;
+        }
+        double before = utilization();
+        if (before > SWAP_OUT_ABOVE) {
+            PCB victim = largestReady();
+            if (victim == null) {
+                return false;
+            }
+            ready.remove(victim);
+            usedMemory -= victim.memory();
+            String stateBefore = victim.state().label();
+            victim.suspend();
+            suspended.addLast(victim);
+            interventions.add(new Intervention(time, before, utilization(), "Swap out",
+                    victim.pid(), stateBefore, victim.state().label()));
+            return true;
+        }
+        if (before < SWAP_IN_BELOW) {
+            PCB returning = firstThatCanReturn();
+            if (returning == null) {
+                return false;
+            }
+            suspended.remove(returning);
+            usedMemory += returning.memory();
+            String stateBefore = returning.state().label();
+            ready.addLast(returning);
+            returning.enterReady(time, ready.size());
+            interventions.add(new Intervention(time, before, utilization(), "Swap in",
+                    returning.pid(), stateBefore, returning.state().label()));
+            return true;
+        }
+        return false;
+    }
+
+    private PCB largestReady() {
+        PCB best = null;
+        for (PCB pcb : ready) {
+            if (best == null || pcb.memory() > best.memory()
+                    || (pcb.memory() == best.memory() && pcb.fileOrder() > best.fileOrder())) {
+                best = pcb;
+            }
+        }
+        return best;
+    }
+
+    /**
+     * Earliest swapped-out process that fits and leaves utilization at or below 90%.
+     * Swapping it in above 90% would make the medium-term thread swap it straight back out.
+     */
+    private PCB firstThatCanReturn() {
+        for (PCB pcb : suspended) {
+            if (usedMemory + pcb.memory() <= MEMORY_MB) {
+                double after = (100.0 * (usedMemory + pcb.memory())) / MEMORY_MB;
+                if (after <= SWAP_OUT_ABOVE) {
+                    return pcb;
                 }
+            }
+        }
+        return null;
+    }
+
+    private void dispatchIfIdle(Policy policy) {
+        if (running != null || ready.isEmpty()) {
+            return;
+        }
+        List<PCB> snapshot = new ArrayList<PCB>(ready);
+        PCB chosen = policy.select(snapshot);
+        if (chosen == null || !ready.contains(chosen)) {
+            throw new IllegalStateException(policy.name() + " did not select a ready process");
+        }
+        ready.remove(chosen);
+        chosen.dispatch(time);
+        running = chosen;
+    }
+
+    private void executeOneMillisecond(Policy policy) {
+        running.consumeOne();
+        time++;
+        if (running.remaining() == 0) {
+            closeSlice();
+            usedMemory -= running.memory();
+            running.complete(time);
+            running = null;
+            return;
+        }
+        if (policy.quantum() > 0 && running.ranThisStay() >= policy.quantum()) {
+            closeSlice();
+            ready.addLast(running);
+            running.enterReady(time, ready.size());
+            running = null;
+        }
+    }
+
+    private void closeSlice() {
+        slices.add(new Slice(running.pid(), running.sliceStart(), time));
+    }
+
+    /** Every 4 ms spent in this ready stay, decrease the priority number by 1, down to 1. */
+    private void ageReady() {
+        for (PCB pcb : ready) {
+            int waited = time - pcb.readyEnteredAt();
+            int due = waited / 4;
+            while (pcb.agedSteps() < due) {
+                pcb.ageOneStep();
             }
         }
     }
 
-    public void stopLoader() {
-        Thread joining;
+    /** Starved when this ready stay has lasted more than N × 5 ms. N was fixed on entry. */
+    private void markStarvation() {
+        for (PCB pcb : ready) {
+            int waited = time - pcb.readyEnteredAt();
+            if (waited > pcb.readyCohort() * 5) {
+                pcb.noteStarved();
+            }
+        }
+    }
+
+    private double utilization() {
+        return (100.0 * usedMemory) / MEMORY_MB;
+    }
+
+    private void stopHelpers() {
+        Thread first;
+        Thread second;
         synchronized (lock) {
             stop = true;
             lock.notifyAll();
-            joining = loader;
+            first = longTerm;
+            second = mediumTerm;
         }
-        if (joining != null) {
-            try {
-                joining.join();
-            } catch (InterruptedException ex) {
-                Thread.currentThread().interrupt();
-                throw new IllegalStateException("interrupted while stopping job-loader", ex);
-            }
+        join(first);
+        join(second);
+    }
+
+    private void join(Thread thread) {
+        if (thread == null) {
+            return;
+        }
+        try {
+            thread.join();
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException(thread.getName() + " was interrupted", ex);
         }
     }
 
-    private void admitUnlocked() {
-        Iterator<PCB> it = jobQueue.iterator();
-        while (it.hasNext()) {
-            PCB pcb = it.next();
-            if (pcb.memory() > MEMORY_CAPACITY_MB) {
-                it.remove();
-                rejected.add(pcb.jobName() + " (pid " + pcb.pid() + ") needs " + pcb.memory()
-                        + " MB, which is more than main memory (" + MEMORY_CAPACITY_MB + " MB)");
-                trace.add(Thread.currentThread().getName() + " rejected " + pcb.jobName()
-                        + ": memory request is larger than main memory");
-                continue;
-            }
-            if (usedMemory + pcb.memory() <= MEMORY_CAPACITY_MB) {
-                usedMemory += pcb.memory();
-                pcb.setState(ProcessState.READY);
-                ready.addLast(pcb);
-                it.remove();
-                trace.add(Thread.currentThread().getName() + " admitted " + pcb.jobName()
-                        + ", state READY, used memory " + usedMemory + "/" + MEMORY_CAPACITY_MB + " MB");
-            }
+    private void waitOnLock() {
+        try {
+            lock.wait();
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("interrupted while waiting for a scheduler thread", ex);
         }
     }
 
-    public boolean hasReady() {
+    private ScheduleResult result(Policy policy) {
         synchronized (lock) {
-            return !ready.isEmpty();
-        }
-    }
-
-    public PCB pollReady() {
-        synchronized (lock) {
-            return ready.pollFirst();
-        }
-    }
-
-    /** Non-preemptive SJF: smallest remaining burst, then earlier file order. */
-    public PCB takeShortest() {
-        synchronized (lock) {
-            PCB best = null;
-            for (PCB pcb : ready) {
-                if (best == null
-                        || pcb.remaining() < best.remaining()
-                        || (pcb.remaining() == best.remaining() && pcb.fileOrder() < best.fileOrder())) {
-                    best = pcb;
-                }
-            }
-            if (best != null) {
-                ready.remove(best);
-            }
-            return best;
-        }
-    }
-
-    public void requeue(PCB pcb) {
-        synchronized (lock) {
-            pcb.setState(ProcessState.READY);
-            ready.addLast(pcb);
-            trace.add(pcb.jobName() + " preempted by the quantum, state READY, remaining burst "
-                    + pcb.remaining() + " ms");
-        }
-    }
-
-    public void runFor(PCB pcb, int units) {
-        synchronized (lock) {
-            if (units <= 0) {
-                throw new IllegalArgumentException("A CPU slice must be a positive number of milliseconds");
-            }
-            if (pcb.remaining() <= 0) {
-                throw new IllegalStateException(pcb.jobName() + " has no remaining burst");
-            }
-            int step = Math.min(units, pcb.remaining());
-            pcb.setState(ProcessState.RUNNING);
-            pcb.markDispatched(clock);
-            int burstAtStart = pcb.remaining();
-            int start = clock;
-            pcb.consume(step);
-            clock += step;
-            slices.add(new Slice(pcb.jobName(), pcb.pid(), start, clock, burstAtStart, pcb.remaining()));
-            trace.add("t=" + start + ".." + clock + " " + pcb.jobName()
-                    + " RUNNING, burst " + burstAtStart + " -> " + pcb.remaining());
-            if (pcb.remaining() == 0) {
-                pcb.complete(clock);
-            }
-        }
-    }
-
-    public void release(PCB pcb) {
-        synchronized (lock) {
-            usedMemory -= pcb.memory();
-            if (usedMemory < 0) {
-                throw new IllegalStateException("Memory accounting became negative");
-            }
-            trace.add(pcb.jobName() + " state TERMINATED, released " + pcb.memory()
-                    + " MB, free memory " + (MEMORY_CAPACITY_MB - usedMemory) + " MB");
-        }
-    }
-
-    public ScheduleResult result(String algorithm) {
-        synchronized (lock) {
-            List<PCB> done = new ArrayList<PCB>();
-            for (PCB pcb : all) {
-                if (pcb.state() == ProcessState.TERMINATED) {
-                    done.add(pcb);
-                }
-            }
-            return new ScheduleResult(algorithm, done, slices, rejected, trace, clock);
+            return new ScheduleResult(policy.name(), mediumEnabled, policy.aging(),
+                    all, slices, interventions);
         }
     }
 }
