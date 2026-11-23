@@ -1,9 +1,7 @@
-# Task 2 — FCFS
+# Member 2
 
-Member 2. One class: `FcfsScheduler`.
+Thread 2, the long-term scheduler, and shortest job first.
 
-Non-preemptive first-come-first-served. Take the head of the ready queue and run it until the burst is 0, then release its memory. Do not reorder the queue.
+Keep checking free memory and move the next job from the job queue to the ready queue only when it fits in 2048 MB. Do not load a job that does not fit.
 
-On `samples/job.txt` the average waiting time is 11.75 ms and the average completion time is 18.75 ms. Job3 (burst 3) waits 18 ms behind Job1 and Job2. That is the convoy effect.
-
-Keep `public ScheduleResult run(Machine machine)`.
+Shortest job first: when more than one ready process has the same CPU burst, run them in arrival order. Processes arrive at time 0, in the order they were read.

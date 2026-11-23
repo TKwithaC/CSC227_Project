@@ -1,19 +1,7 @@
-# Task 4 — Round Robin, the menu, and the tables
+# Member 4
 
-Member 4. Four classes.
+The main thread and priority scheduling.
 
-| File | Role |
-| --- | --- |
-| `RoundRobinScheduler.java` | Preemptive RR. Constructor takes the quantum. |
-| `Runner.java` | Starts the reader and the loader, then calls task 2, 3, or 4 |
-| `SchedulerApp.java` | The menu |
-| `TextReport.java` | Gantt chart, per-job table, averages |
+The main thread runs the algorithm the user picks. Priority is non-preemptive. Priority numbers are 1 to 30, and a smaller number runs first. Equal priorities follow arrival order.
 
-Quantum 3 and quantum 5 are the two required runs. A job that still has burst left goes to the tail of the ready queue. A job that finishes releases its memory.
-
-On `samples/job.txt`:
-
-- RR-3 average waiting 14.75 ms, average completion 21.75 ms, average response 4.50 ms
-- RR-5 average waiting 15.00 ms, average completion 22.00 ms, average response 7.00 ms
-
-Keep `public ScheduleResult run(Machine machine)` and `public RoundRobinScheduler(int quantum)`.
+A process is starved if it remains in the ready queue for more than N × 5 ms without being dispatched. N is the number of processes in the ready queue when that process enters, and it stays fixed. Every 4 ms, decrease the priority number by 1. Say which processes starved.
