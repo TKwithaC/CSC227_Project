@@ -99,3 +99,96 @@ We did not use a strict head-of-line block (where one large job freezes every jo
 **Round Robin** is FCFS plus a timer. The process runs for at most q milliseconds. If the burst remains, the process returns to the tail of the ready queue. The handout fixes q at 3 and at 5. A new admission also joins the tail, so a job that just became ready does not cut in front of a job that was preempted a moment earlier. On this workload memory is freed only when a burst hits zero, so a new admission and a preemption do not happen on the same decision except at a completion.
 
 A very large quantum never preempts, so Round Robin with quantum 100 ms produces the same slices as FCFS on the sample. The test checks that. It is the chapter's observation that Round Robin becomes FCFS as the quantum grows.
+
+## 5. Worked example — the handout file
+
+All four jobs fit. Total CPU work is 8 + 10 + 3 + 7 = 28 ms, and there is no idle time, so every algorithm has makespan 28 ms, CPU utilization 100%, and throughput 4/28 ≈ 0.1429 processes per millisecond. Throughput does not separate the algorithms on this file. Waiting time and response time do.
+
+### FCFS
+
+Order: Job1, Job2, Job3, Job4.
+
+```text
+| Job1 | Job2 | Job3 | Job4 |
+0      8      18     21     28
+```
+
+| Job | Burst | Start | Completion | Waiting | Response |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Job1 | 8 | 0 | 8 | 0 | 0 |
+| Job2 | 10 | 8 | 18 | 8 | 8 |
+| Job3 | 3 | 18 | 21 | 18 | 18 |
+| Job4 | 7 | 21 | 28 | 21 | 21 |
+
+Average waiting time = (0 + 8 + 18 + 21) / 4 = **11.75 ms**. Average completion time = **18.75 ms**.
+
+Job3 needs only 3 ms of CPU and waits 18 ms. It is stuck behind a burst of 8 and a burst of 10. That is the convoy effect.
+
+### SJF
+
+Order by burst: Job3 (3), Job4 (7), Job1 (8), Job2 (10).
+
+```text
+| Job3 | Job4 | Job1 | Job2 |
+0      3      10     18     28
+```
+
+| Job | Burst | Start | Completion | Waiting | Response |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Job3 | 3 | 0 | 3 | 0 | 0 |
+| Job4 | 7 | 3 | 10 | 3 | 3 |
+| Job1 | 8 | 10 | 18 | 10 | 10 |
+| Job2 | 10 | 18 | 28 | 18 | 18 |
+
+Average waiting time = (0 + 3 + 10 + 18) / 4 = **7.75 ms**. Average completion time = **14.75 ms**.
+
+This is the best waiting time of the four runs. Nothing in the memory limit stopped the short jobs from running first, so the textbook result shows up in the numbers.
+
+### RR-3
+
+```text
+| Job1 | Job2 | Job3 | Job4 | Job1 | Job2 | Job4 | Job1 | Job2 | Job4 | Job2 |
+0      3      6      9      12     15     18     21     23     26     27     28
+```
+
+| Job | Completion | Waiting | Response |
+| --- | ---: | ---: | ---: |
+| Job1 | 23 | 15 | 0 |
+| Job2 | 28 | 18 | 3 |
+| Job3 | 9 | 6 | 6 |
+| Job4 | 27 | 20 | 9 |
+
+Average waiting time = **14.75 ms**. Average completion time = **21.75 ms**. Average response time = (0 + 3 + 6 + 9) / 4 = **4.50 ms**.
+
+Waiting time is worse than FCFS. Response time is much better. Job4 reaches the CPU at t = 9 instead of t = 21. That tradeoff is why Round Robin is used when response time matters.
+
+One slice from the burst log, so the starting and stopping burst requirement is visible: Job1 runs at t = 0 with burst 8 and leaves the slice with burst 5, then returns at t = 12 with burst 5 and leaves with burst 2, then finishes at t = 21..23 (burst 2 → 0).
+
+### RR-5
+
+```text
+| Job1 | Job2 | Job3 | Job4 | Job1 | Job2 | Job4 |
+0      5      10     13     18     21     26     28
+```
+
+| Job | Completion | Waiting | Response |
+| --- | ---: | ---: | ---: |
+| Job1 | 21 | 13 | 0 |
+| Job2 | 26 | 16 | 5 |
+| Job3 | 13 | 10 | 10 |
+| Job4 | 28 | 21 | 13 |
+
+Average waiting time = **15.00 ms**. Average completion time = **22.00 ms**. Average response time = **7.00 ms**.
+
+Quantum 5 is closer to FCFS than quantum 3 is. Job3, whose whole burst is 3 ms, does not run until t = 10, because Job1 takes 5 ms and Job2 takes 5 ms first. A larger quantum means fewer preemptions and a later first response for the jobs at the back of the queue.
+
+### Comparison on the handout file
+
+| Algorithm | Avg waiting | Avg completion | Avg response | CPU utilization | Throughput |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| FCFS | 11.75 | 18.75 | 11.75 | 100% | 0.1429 / ms |
+| SJF | 7.75 | 14.75 | 7.75 | 100% | 0.1429 / ms |
+| RR-3 | 14.75 | 21.75 | 4.50 | 100% | 0.1429 / ms |
+| RR-5 | 15.00 | 22.00 | 7.00 | 100% | 0.1429 / ms |
+
+SJF wins on waiting time. RR-3 wins on response time. FCFS is simple and, on this particular file, beats both Round Robin settings on waiting time, but it has the worst response time because of the convoy. The full trace is in `docs/test-runs/sample-all.txt`.
