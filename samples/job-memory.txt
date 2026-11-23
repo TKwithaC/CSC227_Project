@@ -1,0 +1,10 @@
+# Four jobs that do not all fit in 8192 MB at the same time.
+# Process ID, burst (ms), memory (MB)
+JobA
+1, 6, 5000
+JobB
+2, 4, 5000
+JobC
+3, 5, 3000
+JobD
+4, 2, 1000
