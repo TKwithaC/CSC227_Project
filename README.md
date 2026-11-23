@@ -1,41 +1,21 @@
 # CSC 227 — Multithreaded scheduling simulator
 
-A Java simulation of the long-term, short-term, and medium-term schedulers for one CPU, as specified in the CSC 227 project for semester 1448.
-
-The short-term scheduler runs one of three algorithms:
-
-- Shortest job first (non-preemptive; equal bursts keep arrival order)
-- Round Robin with time quantum 5 ms
-- Non-preemptive priority, with aging and starvation
-
-Main memory is 2048 MB. Every process arrives at time 0. Context-switch time is 0. The clock steps by 1 ms.
-
-## Job file
-
-One process per line: `Process ID: burst in ms: priority; memory in MB`.
-
-```text
-1:25:4;500
-2:13:3;700
-3:20:3;100
-```
-
-Priority is an integer from 1 to 30. A smaller number is a higher priority. The sample above is `samples/job.txt`.
-
-## Run
-
-Java 11 or newer. No libraries.
+Java program for the CSC 227 project, first semester 1448. It simulates one CPU with a long-term scheduler, a short-term scheduler, and a medium-term scheduler. The reference solution is in `src/ai`. The team folders are empty on purpose: each member writes their own part.
 
 ```bash
 bash scripts/build.sh
-java -cp out/ai csc227.ai.SchedulerApp samples/job.txt --algorithm=sjf --medium=off
-java -cp out/team csc227.team.task4.SchedulerApp samples/job.txt --algorithm=priority --medium=on
+java -cp out/ai csc227.ai.SchedulerApp samples/job.txt
 ```
 
-With no flags, the program asks for the file, whether the medium-term scheduler starts enabled, and which algorithm to run.
+`samples/job.txt` is the file from the project handout. With no flags, the program asks which algorithm to run and whether the medium-term scheduler starts enabled. The report is `docs/REPORT.pdf`.
 
-`src/ai` is the reference copy. `src/team` is the same program split into four folders, one member each. The split is in `docs/TEAM_TASKS.md`. The report is `docs/REPORT.pdf`.
+## Task split
 
-## Output
+| Member | Folder | What to do |
+| --- | --- | --- |
+| 1 | `src/team/task1` | Processes and Thread 1. Build the PCB (process id, state, CPU burst, priority, memory, waiting time, turnaround time). Read `job.txt`, create the PCBs, put them in the job queue, then end the thread. Also print the Gantt chart, the process table, and the two averages. |
+| 2 | `src/team/task2` | Thread 2, the long-term scheduler, and shortest job first. Load the next job into the ready queue only when it fits in 2048 MB. For SJF, equal CPU bursts are scheduled by arrival order. |
+| 3 | `src/team/task3` | Thread 3, the medium-term scheduler, and Round Robin. Above 90% memory use, swap out the process with the largest memory. Below 70%, swap it back in. The mechanism can be enabled or disabled at startup. Print each intervention as specified. Round Robin gives each process 5 ms. |
+| 4 | `src/team/task4` | The main thread and priority scheduling. Let the user choose the algorithm. Priority is non-preemptive, numbers 1–30, smallest number first, ties by arrival order. Mark a process starved if it stays in the ready queue longer than N × 5 ms without being dispatched, where N is fixed when it enters. Every 4 ms, decrease a waiting process's priority number by 1. Print which processes starved. |
 
-For the selected algorithm the program prints a Gantt chart, a table (process id, burst, start, termination, waiting, turnaround), and the average waiting time and average turnaround time. Priority also names the starved processes. When the medium-term scheduler swaps, it prints the time, the process, the utilization before and after, the action, and the state change.
+Processes arrive at time 0, in the order they are read. Context-switch time is 0. The clock is 1 ms. The program must use threads.
