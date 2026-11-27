@@ -1,22 +1,19 @@
 package csc227.team.task1;
 
 public class PCB {
-    // البيانات الأساسية المقروءة من الملف
     private final int pid;
     private final int burstTime;
-    private int priority;          // قابل للتعديل بسبب الـ Aging في المهمة الرابعة
+    private int priority;          
     private final int memoryRequired;
-    private final int arrivalOrder; // لحفظ ترتيب القراءة (تصل كلها في الزمن 0)
+    private final int arrivalOrder; 
 
-    // بيانات الحالة والتتبع أثناء المحاكاة
     private ProcessState state;
     private int remainingTime;
-    private int startTime = -1;     // -1 تعني أنها لم تدخل المعالج بعد
+    private int startTime = -1;     
     private int terminationTime = 0;
     private int waitingTime = 0;
     private int turnaroundTime = 0;
 
-    // متغيرات مساعدة للمهمة الرابعة (Starvation & Aging)
     private int readyQueueEntryTime = 0;
     private int readyQueueCountAtEntry = 0;
     private boolean starved = false;
@@ -31,16 +28,13 @@ public class PCB {
         this.state = ProcessState.NEW;
     }
 
-    // --- دوال الحسابات التلقائية عند انتهاء العملية ---
     public void calculateMetrics(int currentTime) {
         this.terminationTime = currentTime;
-        // بما أن زمن الوصول للجميع هو 0 حسب افتراضات المشروع:
         this.turnaroundTime = this.terminationTime; 
         this.waitingTime = this.turnaroundTime - this.burstTime;
         this.state = ProcessState.TERMINATED;
     }
 
-    // --- Getters and Setters ---
     public int getPid() { return pid; }
     public int getBurstTime() { return burstTime; }
     public int getPriority() { return priority; }
@@ -56,7 +50,6 @@ public class PCB {
 
     public int getStartTime() { return startTime; }
     public void setStartTime(int startTime) { 
-        // نسجل وقت البداية فقط في أول مرة تدخل فيها العملية للمعالج
         if (this.startTime == -1) {
             this.startTime = startTime;
         }
