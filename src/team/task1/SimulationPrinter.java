@@ -5,7 +5,6 @@ import java.util.List;
 
 public class SimulationPrinter {
 
-    // كلاس داخلي لتمثيل كل قطعة زمنية في مخطط جانت (مثلاً: P1 من 0 إلى 5)
     public static class GanttSlice {
         public final int pid;
         public final int startTime;
@@ -18,7 +17,6 @@ public class SimulationPrinter {
         }
     }
 
-    // 1. دالة طباعة مخطط جانت
     public static void printGanttChart(List<GanttSlice> slices) {
         System.out.println("\n==================== GANTT CHART ====================");
         if (slices == null || slices.isEmpty()) {
@@ -26,7 +24,6 @@ public class SimulationPrinter {
             return;
         }
 
-        // طباعة أسماء العمليات في المربعات
         StringBuilder bar = new StringBuilder("|");
         StringBuilder timeline = new StringBuilder();
         timeline.append(slices.get(0).startTime);
@@ -35,7 +32,6 @@ public class SimulationPrinter {
             String label = " P" + slice.pid + " ";
             bar.append(label).append("|");
 
-            // محاذاة الأرقام أسفل الحدود بدقة
             String endStr = String.valueOf(slice.endTime);
             int spaces = label.length() + 1 - endStr.length();
             timeline.append(" ".repeat(Math.max(1, spaces))).append(endStr);
@@ -46,9 +42,8 @@ public class SimulationPrinter {
         System.out.println("=====================================================\n");
     }
 
-    // 2. دالة طباعة جدول العمليات والمتوسطات
     public static void printProcessTableAndAverages(List<PCB> completedProcesses) {
-        // ترتيب الجدول تصاعدياً حسب رقم العملية (PID) ليكون مرتباً
+        
         completedProcesses.sort(Comparator.comparingInt(PCB::getPid));
 
         System.out.println("=======================================================================================");
