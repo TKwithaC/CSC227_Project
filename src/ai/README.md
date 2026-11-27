@@ -1,11 +1,14 @@
 # Reference solution
 
-Package `csc227.ai`. This tree is the answer key for the four-person split in `src/team`.
+Same four tasks as the team. Compare your folder with the matching one here.
 
-Run it with:
+| Task | Reference |
+| --- | --- |
+| 1 | `task1` — PCB, `job.txt`, Thread 1, Gantt chart, table, averages |
+| 2 | `task2` — Thread 2 and shortest job first |
+| 3 | `task3` — Thread 3, swap messages, and Round Robin (q = 5 ms) |
+| 4 | `task4` — main thread, priority, aging, starvation, and the menu |
 
 ```bash
-java -cp out/ai csc227.ai.SchedulerApp samples/job.txt --all
+java -cp out/ai csc227.ai.task4.SchedulerApp samples/job.txt
 ```
-
-The classes are the whole program in one package: the PCB and the file reader, memory admission, FCFS, SJF, Round Robin, and the text report. The team tree splits those same responsibilities across `task1` through `task4`. `tests/csc227/check/OracleTest.java` runs both and compares every CPU slice.
