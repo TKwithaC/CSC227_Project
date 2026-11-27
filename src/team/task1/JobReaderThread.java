@@ -26,9 +26,7 @@ public class JobReaderThread extends Thread {
             while ((line = br.readLine()) != null) {
                 line = line.trim();
                 if (line.isEmpty()) continue;
-
-                // صيغة السطر في الملف هي: 1:25:4;500
-                // نقسم السطر بناءً على النقطتين (:) أو الفاصلة المنقوطة (;)
+                
                 String[] parts = line.split("[:;]");
                 
                 if (parts.length == 4) {
@@ -39,10 +37,9 @@ public class JobReaderThread extends Thread {
 
                     PCB pcb = new PCB(pid, burstTime, priority, memory, order++);
                     
-                    // نستخدم synchronized لحماية الطابور أثناء الإضافة لأن Thread 2 يقرأ منه
                     synchronized (jobQueue) {
                         jobQueue.add(pcb);
-                        jobQueue.notifyAll(); // تنبيه Thread 2 بوجود عملية جديدة
+                        jobQueue.notifyAll(); 
                     }
                 }
             }
@@ -51,7 +48,7 @@ public class JobReaderThread extends Thread {
         } catch (NumberFormatException e) {
             System.err.println("Invalid number format in job file: " + e.getMessage());
         } finally {
-            // إبلاغ بقية الخيوط أن قراءة الملف انتهت ولن تأتي عمليات أخرى
+            
             readingFinished.set(true);
             synchronized (jobQueue) {
                 jobQueue.notifyAll();
