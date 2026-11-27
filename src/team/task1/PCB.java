@@ -1,10 +1,5 @@
 package team.task1;
 
-/**
- * Process control block. The handout requires the process id, state, CPU burst,
- * priority, memory, waiting time, and turnaround time. The other fields are
- * bookkeeping for the 1 ms clock, aging, and starvation.
- */
 public final class PCB {
     private final int pid;
     private final int burst;
@@ -75,7 +70,6 @@ public final class PCB {
         starved = true;
     }
 
-    /** Apply one aging step. Priority number decreases, and 1 is the best priority. */
     public void ageOneStep() {
         if (priority > 1) {
             priority--;
